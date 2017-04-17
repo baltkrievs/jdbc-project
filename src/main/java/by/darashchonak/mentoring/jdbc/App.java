@@ -1,16 +1,12 @@
 package by.darashchonak.mentoring.jdbc;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.lang.reflect.Field;
-import java.sql.Connection;
-import java.sql.DatabaseMetaData;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Types;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.UUID;
+import java.sql.*;
+import java.util.*;
+import org.apache.log4j.Logger;
 
 public class App {
 
@@ -18,63 +14,88 @@ public class App {
 
     public static void main(String[] args) {
 
-        try (Connection fromConn = DriverManager.getConnection("jdbc:mysql://192.168.100.5/from", "root", "root");
-                Connection toConn = DriverManager.getConnection("jdbc:mysql://192.168.100.5/to", "root", "root")) {
+        Properties prop = new Properties();
 
-            // String insert1 = "INSERT INTO new_table (data) VALUES (" +
-            // UUID.randomUUID().toString() + ");";
-            PreparedStatement insert1 = fromConn.prepareStatement("INSERT INTO new_table (data) VALUES (?);");
+        try (FileInputStream fileInputStream = new FileInputStream(new File("db.properties"))) {
+            prop.load(fileInputStream);
+        } catch (IOException e) {
+            System.out.println("Could not find file db.properties");
+        }
 
-            for (int j = 0; j < 100; j++) {
-                for (int i = 0; i < 1000; i++) {
-                    insert1.setString(1, UUID.randomUUID().toString());
-                    insert1.addBatch();
+        try (Connection fromConn = DriverManager.getConnection("jdbc:mysql://" +
+                        prop.getProperty("db.source.host") + "/" +
+                        prop.getProperty("db.source.database"),
+                prop.getProperty("db.source.username"),
+                prop.getProperty("db.source.password"));
+
+             Connection toConn = DriverManager.getConnection("jdbc:mysql://" +
+                             prop.getProperty("db.destination.host") + "/" +
+                             prop.getProperty("db.destination.database"),
+                     prop.getProperty("db.destination.username"),
+                     prop.getProperty("db.destination.password"))
+        ) {
+
+            List<String> tables = getTables(fromConn);
+            for (String table : tables) {
+
+                String sql = buildCreateTableSQL(table, fromConn);
+
+                if (isTableExists(table, toConn)) {
+                    dropTable(table, toConn);
                 }
-                insert1.executeBatch();
+
+                PreparedStatement statement = toConn.prepareStatement(sql);
+                statement.execute();
+                statement.close();
             }
 
-            // List<String> tables = getTables(fromConn);
-            // for (String table : tables) {
-            //
-            // String sql = buildCreateTableSQL(table, fromConn);
-            //
-            // if (isTableExists(table, toConn)) {
-            // dropTable(table, toConn);
-            // }
-            //
-            // PreparedStatement statement = toConn.prepareStatement(sql);
-            // statement.execute();
-            // statement.close();
-            // }
-            //
-            // Collections.sort(tables);
-            //
-            // for (String tableName : tables) {
-            // PreparedStatement query = fromConn.prepareStatement("SELECT *
-            // FROM " + tableName);
-            // query.setFetchSize(BATCH_SIZE);
-            // ResultSet result = query.executeQuery();
-            // ResultSetMetaData rsmd = result.getMetaData();
-            //
-            // System.out.println(rsmd.getColumnCount());
-            //
-            // PreparedStatement insert =
-            // toConn.prepareStatement(buildInsertSql(tableName, fromConn));
-            //
-            // int count = 0;
-            // while (result.next()) {
-            // for (int j = 1; j <= rsmd.getColumnCount(); j++) {
-            // insert.setObject(j, result.getObject(j));
-            // }
-            // insert.addBatch();
-            //
-            // if (++count % BATCH_SIZE == 0) {
-            // insert.executeBatch();
-            // count = 0;
-            // }
-            // }
-            // insert.executeBatch();
-            // }
+            Collections.sort(tables);
+
+            for (String tableName : tables) {
+                Statement query = fromConn.createStatement(ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY);
+
+                if (args.length >= 1 && args[0] != null && args[0].toLowerCase().equals("r")){
+
+                }
+
+                query.setFetchSize(BATCH_SIZE);
+                ResultSet result = query.executeQuery("SELECT * FROM " + tableName);
+                ResultSetMetaData rsmd = result.getMetaData();
+
+                PreparedStatement insert =
+                        toConn.prepareStatement(buildInsertSql(tableName, fromConn));
+
+                int count = 0;
+
+                if (args.length >= 1 && args[0] != null && args[0].toLowerCase().equals("r")){
+                    result.last();
+                    while (result.previous()) {
+                        for (int j = 1; j <= rsmd.getColumnCount(); j++) {
+                            insert.setObject(j, result.getObject(j));
+                        }
+                        insert.addBatch();
+
+                        if (++count % BATCH_SIZE == 0) {
+                            insert.executeBatch();
+                            count = 0;
+                        }
+                    }
+                } else {
+
+                    while (result.next()) {
+                        for (int j = 1; j <= rsmd.getColumnCount(); j++) {
+                            insert.setObject(j, result.getObject(j));
+                        }
+                        insert.addBatch();
+
+                        if (++count % BATCH_SIZE == 0) {
+                            insert.executeBatch();
+                            count = 0;
+                        }
+                    }
+                }
+                insert.executeBatch();
+            }
 
         } catch (SQLException e) {
 
@@ -87,12 +108,11 @@ public class App {
 
         DatabaseMetaData metaData = connection.getMetaData();
         ResultSet rs = metaData.getTables(connection.getCatalog(), connection.getSchema(), "%",
-                new String[] { "TABLE" });
+                new String[]{"TABLE"});
 
         while (rs.next()) {
             String tableName = rs.getString(3);
 
-            System.out.println(tableName);
             tables.add(tableName);
         }
 
@@ -175,8 +195,6 @@ public class App {
 
         String insert = "INSERT INTO " + tableName + " (" + String.join(",", columns) + ") VALUES ("
                 + String.join(",", values) + ");";
-
-        System.out.println(insert);
 
         return insert;
     }
