@@ -10,11 +10,10 @@ import java.util.*;
 
 public class App {
 
-    private static int BATCH_SIZE = 1000;
+    private static int BATCH_SIZE = 10;
+    private static Properties prop = new Properties();
 
     public static void main(String[] args) {
-
-        Properties prop = new Properties();
 
         try (FileInputStream fileInputStream = new FileInputStream(new File("db.properties"))) {
             prop.load(fileInputStream);
@@ -22,18 +21,8 @@ public class App {
             System.out.println("Could not find file db.properties");
         }
 
-        try (Connection fromConn = DriverManager.getConnection("jdbc:mysql://" +
-                        prop.getProperty("db.source.host") + "/" +
-                        prop.getProperty("db.source.database"),
-                prop.getProperty("db.source.username"),
-                prop.getProperty("db.source.password"));
-
-             Connection toConn = DriverManager.getConnection("jdbc:mysql://" +
-                             prop.getProperty("db.destination.host") + "/" +
-                             prop.getProperty("db.destination.database"),
-                     prop.getProperty("db.destination.username"),
-                     prop.getProperty("db.destination.password"))
-        ) {
+        try (Connection fromConn = getConnection(Direction.SRC);
+             Connection toConn = getConnection(Direction.DST)) {
 
             List<String> tables = getTables(fromConn);
             for (String table : tables) {
@@ -52,13 +41,9 @@ public class App {
             Collections.sort(tables);
 
             for (String tableName : tables) {
-                Statement query = fromConn.createStatement(ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY);
 
-                if (args.length >= 1 && args[0] != null && args[0].toLowerCase().equals("r")){
-
-                }
-
-                query.setFetchSize(BATCH_SIZE);
+                Statement query = fromConn.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+                query.setFetchSize(Integer.MIN_VALUE);
                 ResultSet result = query.executeQuery("SELECT * FROM " + tableName);
                 ResultSetMetaData rsmd = result.getMetaData();
 
@@ -77,9 +62,10 @@ public class App {
 
                         if (++count % BATCH_SIZE == 0) {
                             insert.executeBatch();
-                            count = 0;
+                            insert.clearParameters();
                         }
                     }
+                    insert.executeBatch();
                 } else {
 
                     while (result.next()) {
@@ -90,11 +76,12 @@ public class App {
 
                         if (++count % BATCH_SIZE == 0) {
                             insert.executeBatch();
-                            count = 0;
+                            insert.clearParameters();
                         }
                     }
+                    insert.executeBatch();
                 }
-                insert.executeBatch();
+
             }
 
         } catch (SQLException e) {
@@ -182,7 +169,7 @@ public class App {
 
     private static String buildInsertSql(String tableName, Connection connection) throws SQLException {
 
-        DatabaseMetaData metaData = connection.getMetaData();
+        DatabaseMetaData metaData = getConnection(Direction.SRC).getMetaData();
         ResultSet rs = metaData.getColumns(connection.getCatalog(), connection.getSchema(), tableName, "%");
 
         List<String> columns = new ArrayList<>();
@@ -197,6 +184,23 @@ public class App {
                 + String.join(",", values) + ");";
 
         return insert;
+    }
+
+    private static Connection getConnection(Direction direction) throws SQLException {
+
+        if (direction == Direction.SRC){
+            return DriverManager.getConnection("jdbc:mysql://" +
+                            prop.getProperty("db.source.host") + "/" +
+                            prop.getProperty("db.source.database"),
+                    prop.getProperty("db.source.username"),
+                    prop.getProperty("db.source.password"));
+        } else {
+            return DriverManager.getConnection("jdbc:mysql://" +
+                            prop.getProperty("db.destination.host") + "/" +
+                            prop.getProperty("db.destination.database"),
+                    prop.getProperty("db.destination.username"),
+                    prop.getProperty("db.destination.password"));
+        }
     }
 
 }
